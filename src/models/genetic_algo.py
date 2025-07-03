@@ -167,7 +167,7 @@ class GeneticAlgorithm:
         elif model_type == 'ridge':
             return Ridge(**params, random_state=42)
         elif model_type == 'logistic':
-            return LogisticRegression(**params, random_state=42, max_iter=1000)
+            return LogisticRegression(**params, random_state=42, max_iter=2000)
     
     def _evaluate_individual(self, individual: Individual) -> float:
         """Évalue un individu"""
@@ -371,68 +371,36 @@ class GeneticAlgorithm:
         
         return best.genes, best.fitness
     
-    def get_real_trading_data(self):
-        """Extrait données réelles pour simulation trading"""
+    def save_best_model_config(self):
+        """Sauvegarde la configuration du meilleur modèle"""
         if not self.best_individuals:
-            return None
+            return False
             
         best = self.best_individuals[0]
         genes = best.genes
         
-        # Reconstruire prédictions réelles
-        unsup_features = [col for i, col in enumerate(self.feature_cols) if genes['features_unsup'][i]]
-        sup_features = [col for i, col in enumerate(self.feature_cols) if genes['features_sup'][i]]
+        # Conversion des indices numpy en listes Python
+        unsup_features_indices = [i for i, selected in enumerate(genes['features_unsup']) if selected]
+        sup_features_indices = [i for i, selected in enumerate(genes['features_sup']) if selected]
         
-        X_unsup = self.data[unsup_features].fillna(0)
-        unsup_model = self._get_unsupervised_model(genes['unsup_model'], genes['unsup_params'])
-        
-        if genes['unsup_model'] == 'isolation_forest':
-            cluster_labels = unsup_model.fit_predict(X_unsup)
-            distances = unsup_model.decision_function(X_unsup)
-        else:
-            cluster_labels = unsup_model.fit_predict(X_unsup)
-            distances = np.zeros(len(cluster_labels))
-        
-        X_sup = self.data[sup_features].fillna(0)
-        X_enhanced = X_sup.copy()
-        X_enhanced['cluster_label'] = cluster_labels
-        X_enhanced['anomaly_distance'] = distances
-        X_enhanced['cluster_size'] = X_enhanced['cluster_label'].map(X_enhanced['cluster_label'].value_counts())
-        
-        target_col = genes['target']
-        y = self.data[target_col].fillna(0)
-        
-        valid_idx = ~(X_enhanced.isnull().any(axis=1) | y.isnull())
-        X_final = X_enhanced[valid_idx]
-        y_final = y[valid_idx]
-        
-        # Split temporel
-        split_point = int(len(X_final) * 0.7)
-        X_test = X_final[split_point:]
-        y_test = y_final[split_point:]
-        X_train = X_final[:split_point]
-        y_train = y_final[:split_point:]
-        
-        # Entraînement et prédiction
-        sup_model = self._get_supervised_model(genes['sup_model'], genes['sup_params'])
-        sup_model.fit(X_train, y_train)
-        y_pred = sup_model.predict(X_test)
-        
-        if hasattr(sup_model, 'predict_proba'):
-            y_pred_binary = (sup_model.predict_proba(X_test)[:, 1] > 0.5).astype(int)
-        else:
-            y_pred_binary = (y_pred > 0.5).astype(int)
-        
-
-        return {
-            'predictions': y_pred_binary,
-            'reality': y_test.values,
-            'dates': y_test.index,
-            'signals_buy': (y_pred_binary == 1).sum(),
-            'signals_sell': (y_pred_binary == 0).sum(),
-            'horizon': int(target_col.split('_')[1].replace('h', ''))
+        config = {
+            'fitness': best.fitness,
+            'unsup_model': genes['unsup_model'],
+            'unsup_params': genes['unsup_params'],
+            'sup_model': genes['sup_model'],
+            'sup_params': genes['sup_params'],
+            'features_unsup_indices': unsup_features_indices,
+            'features_sup_indices': sup_features_indices,
+            'target': genes['target']
         }
-
+        
+        import json
+        with open('best_model_config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print(f"✅ Configuration sauvegardée: fitness={best.fitness:.4f}")
+        return True
+    
     def plot_evolution(self):
         """Affiche l'évolution de la fitness"""
         if not self.fitness_history:
@@ -606,7 +574,7 @@ def test_genetic_algorithm():
     
     # Données
     collector = SPYCollector()
-    raw_data = collector.get_hourly_data(period="3mo")
+    raw_data = collector.get_hourly_data(period="6mo")
     raw_data = collector.get_technical_indicators(raw_data)
     
     processor = FeatureProcessor()
@@ -617,10 +585,11 @@ def test_genetic_algorithm():
         return
     
     # Algorithme génétique
-    ga = GeneticAlgorithm(processed_data, population_size=20, generations=3)  # Test rapide
+    ga = GeneticAlgorithm(processed_data, population_size=100, generations=30) 
     best_individuals = ga.evolve()
     
     best_genes, best_fitness = ga.get_best_model()
+    ga.save_best_model_config()
     
     print(f"✅ Évolution terminée")
     print(f"🏆 Meilleur fitness: {best_fitness:.4f}")
@@ -629,15 +598,11 @@ def test_genetic_algorithm():
     print(f"   Supervised: {best_genes['sup_model']}")
     print(f"   Target: {best_genes['target']}")
     
-    # Extraction données réelles pour trading
-    real_data = ga.get_real_trading_data()
-    
-    if real_data:
-        print(f"\n💾 Données réelles extraites pour simulation trading")
-        
-        # Simulation avec données réelles
-        from trading_simulation import simulate_real_trading
-        simulate_real_trading(real_data)
+    # Appel externe à trading_simulation
+    print("\n🚀 Lancement simulation trading...")
+    import subprocess
+    import sys
+    subprocess.run([sys.executable, "trading_simulation.py"])
     
     return ga
 
