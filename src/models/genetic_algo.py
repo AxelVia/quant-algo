@@ -423,13 +423,10 @@ class GeneticAlgorithm:
         else:
             y_pred_binary = (y_pred > 0.5).astype(int)
         
-        # Prix SPY depuis stockage initial
-        spy_prices = self.spy_prices.reindex(y_test.index).fillna(method='ffill') if self.spy_prices is not None else None
-        
+
         return {
             'predictions': y_pred_binary,
             'reality': y_test.values,
-            'spy_prices': spy_prices,
             'dates': y_test.index,
             'signals_buy': (y_pred_binary == 1).sum(),
             'signals_sell': (y_pred_binary == 0).sum(),

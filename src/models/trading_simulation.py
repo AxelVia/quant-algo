@@ -13,6 +13,16 @@ from collectors import SPYCollector
 def get_latest_model_predictions():
     """Récupère prédictions du dernier modèle entraîné"""
     
+    # Chargement config automatique
+    import json
+    try:
+        with open('best_model_config.json', 'r') as f:
+            best_config = json.load(f)
+        print(f"📂 Config chargée: fitness={best_config['fitness']:.4f}")
+    except FileNotFoundError:
+        print("❌ Pas de config sauvegardée. Lancez genetic_algo.py d'abord.")
+        return None
+    
     # Récupération données identiques à genetic_algo.py
     collector = SPYCollector()
     raw_data = collector.get_hourly_data(period="3mo")
@@ -24,17 +34,6 @@ def get_latest_model_predictions():
     processor = FeatureProcessor()
     processed_data = processor.process_features(raw_data)
     
-    # Configuration meilleur modèle (à mettre à jour selon dernier run)
-    best_config = {
-        'unsup_model': 'gaussian_mixture',
-        'unsup_params': {'n_components': 5},
-        'sup_model': 'xgboost_reg', 
-        'sup_params': {'n_estimators': 100, 'max_depth': 6},
-        'features_unsup_indices': [1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39],  # Exemples
-        'features_sup_indices': [0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38],
-        'target': 'direction_12h'
-    }
-    
     # Recreation du modèle
     feature_cols = [col for col in processed_data.columns 
                    if not any(col.startswith(exc) for exc in ['future_', 'direction_', 'significant_']) 
@@ -43,9 +42,38 @@ def get_latest_model_predictions():
     unsup_features = [feature_cols[i] for i in best_config['features_unsup_indices'] if i < len(feature_cols)]
     sup_features = [feature_cols[i] for i in best_config['features_sup_indices'] if i < len(feature_cols)]
     
-    # Modèles
-    from sklearn.mixture import GaussianMixture
-    from xgboost import XGBRegressor
+    # Import des modèles
+    if best_config['unsup_model'] == 'kmeans':
+        from sklearn.cluster import KMeans
+        unsup_model = KMeans(**best_config['unsup_params'])
+    elif best_config['unsup_model'] == 'dbscan':
+        from sklearn.cluster import DBSCAN
+        unsup_model = DBSCAN(**best_config['unsup_params'])
+    elif best_config['unsup_model'] == 'gaussian_mixture':
+        from sklearn.mixture import GaussianMixture
+        unsup_model = GaussianMixture(**best_config['unsup_params'])
+    elif best_config['unsup_model'] == 'isolation_forest':
+        from sklearn.ensemble import IsolationForest
+        unsup_model = IsolationForest(**best_config['unsup_params'])
+    
+    if best_config['sup_model'] == 'xgboost_reg':
+        from xgboost import XGBRegressor
+        sup_model = XGBRegressor(**best_config['sup_params'], verbosity=0)
+    elif best_config['sup_model'] == 'xgboost_clf':
+        from xgboost import XGBClassifier
+        sup_model = XGBClassifier(**best_config['sup_params'], verbosity=0)
+    elif best_config['sup_model'] == 'rf_reg':
+        from sklearn.ensemble import RandomForestRegressor
+        sup_model = RandomForestRegressor(**best_config['sup_params'])
+    elif best_config['sup_model'] == 'rf_clf':
+        from sklearn.ensemble import RandomForestClassifier
+        sup_model = RandomForestClassifier(**best_config['sup_params'])
+    elif best_config['sup_model'] == 'ridge':
+        from sklearn.linear_model import Ridge
+        sup_model = Ridge(**best_config['sup_params'])
+    elif best_config['sup_model'] == 'logistic':
+        from sklearn.linear_model import LogisticRegression
+        sup_model = LogisticRegression(**best_config['sup_params'])
     
     # Split temporel
     target_col = best_config['target']
@@ -63,27 +91,53 @@ def get_latest_model_predictions():
     X_unsup_train = train_data[unsup_features].fillna(0)
     X_unsup_test = test_data[unsup_features].fillna(0)
     
-    unsup_model = GaussianMixture(**best_config['unsup_params'])
-    cluster_labels_test = unsup_model.fit(X_unsup_train).predict(X_unsup_test)
+    if best_config['unsup_model'] == 'isolation_forest':
+        unsup_model.fit(X_unsup_train)
+        cluster_labels_test = unsup_model.predict(X_unsup_test)
+        distances_test = unsup_model.decision_function(X_unsup_test)
+    elif best_config['unsup_model'] == 'dbscan':
+        unsup_model.fit(X_unsup_train)
+        cluster_labels_test = unsup_model.fit_predict(X_unsup_test)
+        distances_test = np.zeros(len(cluster_labels_test))
+    else:
+        unsup_model.fit(X_unsup_train)
+        cluster_labels_test = unsup_model.predict(X_unsup_test)
+        distances_test = np.zeros(len(cluster_labels_test))
     
     # Supervised  
     X_sup_train = train_data[sup_features].fillna(0)
     X_sup_test = test_data[sup_features].fillna(0)
     
-    # Ajout features clustering
+    # Ajout features clustering pour train
     X_sup_train_enhanced = X_sup_train.copy()
-    X_sup_train_enhanced['cluster'] = unsup_model.predict(train_data[unsup_features].fillna(0))
+    if best_config['unsup_model'] == 'isolation_forest':
+        train_clusters = unsup_model.predict(X_unsup_train)
+        train_distances = unsup_model.decision_function(X_unsup_train)
+    elif best_config['unsup_model'] == 'dbscan':
+        train_clusters = unsup_model.fit_predict(X_unsup_train)
+        train_distances = np.zeros(len(train_clusters))
+    else:
+        train_clusters = unsup_model.predict(X_unsup_train)
+        train_distances = np.zeros(len(train_clusters))
     
-    X_sup_test_enhanced = X_sup_test.copy() 
+    X_sup_train_enhanced['cluster'] = train_clusters
+    X_sup_train_enhanced['anomaly_distance'] = train_distances
+    
+    # Ajout features clustering pour test
+    X_sup_test_enhanced = X_sup_test.copy()
     X_sup_test_enhanced['cluster'] = cluster_labels_test
+    X_sup_test_enhanced['anomaly_distance'] = distances_test
     
     y_train = train_data[target_col]
     y_test = test_data[target_col]
     
-    sup_model = XGBRegressor(**best_config['sup_params'], verbosity=0)
     sup_model.fit(X_sup_train_enhanced, y_train)
     y_pred = sup_model.predict(X_sup_test_enhanced)
-    y_pred_binary = (y_pred > 0.5).astype(int)
+    
+    if hasattr(sup_model, 'predict_proba'):
+        y_pred_binary = (sup_model.predict_proba(X_sup_test_enhanced)[:, 1] > 0.5).astype(int)
+    else:
+        y_pred_binary = (y_pred > 0.5).astype(int)
     
     # Prix SPY correspondants
     spy_test = spy_prices.reindex(test_data.index).ffill()
