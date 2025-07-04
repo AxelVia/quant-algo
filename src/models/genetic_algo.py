@@ -574,7 +574,7 @@ def test_genetic_algorithm():
     
     # Données
     collector = SPYCollector()
-    raw_data = collector.get_hourly_data(period="6mo")
+    raw_data = collector.get_hourly_data(period="12mo")
     raw_data = collector.get_technical_indicators(raw_data)
     
     processor = FeatureProcessor()
@@ -585,7 +585,7 @@ def test_genetic_algorithm():
         return
     
     # Algorithme génétique
-    ga = GeneticAlgorithm(processed_data, population_size=100, generations=30) 
+    ga = GeneticAlgorithm(processed_data, population_size=100, generations=40) 
     best_individuals = ga.evolve()
     
     best_genes, best_fitness = ga.get_best_model()
